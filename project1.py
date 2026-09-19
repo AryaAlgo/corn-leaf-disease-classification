@@ -1,52 +1,196 @@
 import os
 import cv2
 import numpy as np
+import pandas as pd
 
-name = "Aryan Kumar"
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import accuracy_score, classification_report
 
-# Create output folders
-os.makedirs("HEALTHY", exist_ok=True)
-os.makedirs("UNHEALTHY", exist_ok=True)
 
-def load_images(folder):
-    images = []
-    names = []
-    for file in os.listdir(folder):
-        if file.lower().endswith(('.jpg', '.png', '.jpeg')):
-            img = cv2.imread(os.path.join(folder, file))
-            if img is not None:
-                images.append(img)
-                names.append(file)
-    return images, names
+# ============================================================
+# Corn Leaf Disease Classification using KNN
+#
+# Dataset:
+#   dataset/
+#   ├── healthy images/
+#   └── unhealthy images/
+#
+# Label:
+#   0 = Healthy
+#   1 = Unhealthy
+# ============================================================
 
-# Load dataset
-images, names = load_images("dataset")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Process images
-for img, img_name in zip(images, names):
+HEALTHY_DIR = os.path.join(BASE_DIR, "dataset", "healthy images")
+UNHEALTHY_DIR = os.path.join(BASE_DIR, "dataset", "unhealthy images")
 
-    h, w, _ = img.shape
 
-    blur = cv2.GaussianBlur(img, (3, 3), 2)
-    lab = cv2.cvtColor(blur, cv2.COLOR_BGR2Lab)
+def extract_features(image):
+    """
+    Extract image-level color features.
 
-    lower = np.array([0, 125, 0])
-    upper = np.array([255, 255, 255])
+    For each RGB, HSV and LAB channel, calculate:
+    - mean
+    - standard deviation
 
-    mask = cv2.inRange(lab, lower, upper)
+    This gives one feature vector per image.
+    """
+    image = cv2.resize(image, (100, 100))
 
-    infected_pixels = np.sum(mask == 255)
-    total_pixels = h * w
+    # OpenCV reads images as BGR
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
 
-    percent = (infected_pixels / total_pixels) * 100
+    features = []
 
-    print(f"{img_name}  Infection: {percent:.2f}%")
+    # RGB features
+    for channel in cv2.split(rgb):
+        features.extend([np.mean(channel), np.std(channel)])
 
-    if percent >= 40:
-        print("Unhealthy")
-        cv2.imwrite("UNHEALTHY/" + img_name, img)
-    else:
-        print("Healthy")
-        cv2.imwrite("HEALTHY/" + img_name, img)
+    # HSV features
+    for channel in cv2.split(hsv):
+        features.extend([np.mean(channel), np.std(channel)])
+
+    # LAB features
+    for channel in cv2.split(lab):
+        features.extend([np.mean(channel), np.std(channel)])
+
+    return features
+
+
+def load_images_from_folder(folder_path, label):
+    """Load images and return one feature vector per image."""
+    data = []
+
+    if not os.path.isdir(folder_path):
+        raise FileNotFoundError(f"Folder not found: {folder_path}")
+
+    for filename in sorted(os.listdir(folder_path)):
+        if filename.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
+            image_path = os.path.join(folder_path, filename)
+
+            image = cv2.imread(image_path)
+
+            if image is None:
+                print(f"Skipping unreadable image: {filename}")
+                continue
+
+            features = extract_features(image)
+
+            data.append({
+                "filename": filename,
+                "label": label,
+                "features": features
+            })
+
+    return data
+
+
+# ------------------------------------------------------------
+# Load images
+# ------------------------------------------------------------
+
+print("Loading healthy images...")
+healthy_data = load_images_from_folder(HEALTHY_DIR, 0)
+
+print("Loading unhealthy images...")
+unhealthy_data = load_images_from_folder(UNHEALTHY_DIR, 1)
+
+if not healthy_data:
+    raise ValueError("No readable images found in 'healthy images'.")
+
+if not unhealthy_data:
+    raise ValueError("No readable images found in 'unhealthy images'.")
+
+
+# Combine both classes
+all_data = healthy_data + unhealthy_data
+
+X = np.array([item["features"] for item in all_data])
+y = np.array([item["label"] for item in all_data])
+
+filenames = np.array([item["filename"] for item in all_data])
+
+print(f"\nTotal images: {len(all_data)}")
+print(f"Healthy images: {len(healthy_data)}")
+print(f"Unhealthy images: {len(unhealthy_data)}")
+print(f"Feature matrix shape: {X.shape}")
+
+
+# ------------------------------------------------------------
+# Split IMAGES into training and testing sets
+# ------------------------------------------------------------
+
+X_train, X_test, y_train, y_test, files_train, files_test = train_test_split(
+    X,
+    y,
+    filenames,
+    test_size=0.20,
+    random_state=42,
+    stratify=y
+)
+
+
+# ------------------------------------------------------------
+# Train KNN classifier
+# ------------------------------------------------------------
+
+k = 7
+
+knn_classifier = KNeighborsClassifier(n_neighbors=k)
+
+print("\nTraining KNN classifier...")
+knn_classifier.fit(X_train, y_train)
+
+
+# ------------------------------------------------------------
+# Make predictions
+# ------------------------------------------------------------
+
+y_pred = knn_classifier.predict(X_test)
+
+
+# ------------------------------------------------------------
+# Evaluation
+# ------------------------------------------------------------
+
+accuracy = accuracy_score(y_test, y_pred)
+
+print("\n==============================")
+print("KNN Classification Results")
+print("==============================")
+
+print(f"Training images: {len(X_train)}")
+print(f"Testing images:  {len(X_test)}")
+print(f"K value: {k}")
+print(f"Accuracy: {accuracy:.4f}")
+print(f"Accuracy: {accuracy * 100:.2f}%")
+
+print("\nClassification Report:")
+print(
+    classification_report(
+        y_test,
+        y_pred,
+        target_names=["Healthy", "Unhealthy"],
+        zero_division=0
+    )
+)
+
+
+# ------------------------------------------------------------
+# Show individual test predictions
+# ------------------------------------------------------------
+
+print("\nTest Image Predictions:")
+
+for filename, actual, predicted in zip(files_test, y_test, y_pred):
+
+    actual_label = "Healthy" if actual == 0 else "Unhealthy"
+    predicted_label = "Healthy" if predicted == 0 else "Unhealthy"
+
+    print(f"{filename} -> Actual: {actual_label}, Predicted: {predicted_label}")
 
 print("\nAll images processed successfully!")
